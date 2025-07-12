@@ -1,6 +1,6 @@
 
 module "network" {
-  source          = "./modules/network"
+  source          = "./module/network"
   env             = var.env
   vpc_cidr        = var.vpc_cidr
   public_subnets  = var.public_subnets
@@ -9,13 +9,13 @@ module "network" {
 }
 
 module "security" {
-  source     = "./modules/security"
+  source     = "./module/security"
   env        = var.env
   vpc_id     = module.network.vpc_id
 }
 
 module "compute" {
-  source           = "./modules/compute"
+  source           = "./module/compute"
   env              = var.env
   public_subnet_ids = module.network.public_subnet_ids
   web_sg_id        = module.security.web_sg_id
@@ -23,7 +23,7 @@ module "compute" {
 }
 
 module "loadbalancer" {
-  source = "./modules/loadbalancer"
+  source = "./module/loadbalancer"
 
   subnet_ids = module.network.public_subnet_ids
   vpc_id     = module.network.vpc_id

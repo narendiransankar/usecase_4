@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fix: Add swap to prevent freezes (critical for t3.medium)
+# Fix: Add swap to prevent freezes
 sudo fallocate -l 2G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
@@ -9,21 +9,21 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 # Update system and install prerequisites
 sudo apt-get update -y
 sudo apt-get upgrade -y
-sudo apt-get install -y docker.io docker-compose git curl jq
+sudo apt-get install -y docker.io docker-compose git curl jq net-tools
 
 # Add user to docker group
 sudo usermod -aG docker ubuntu
-
+newgrp docker <<EONG
 # Start and enable Docker
 sudo systemctl start docker
 sudo systemctl enable docker
 
-# Clone DevLake
-git clone https://github.com/apache/incubator-devlake.git
-cd incubator-devlake
+# Clone DevLake with full path
+git clone https://github.com/apache/incubator-devlake.git /home/ubuntu/incubator-devlake
+cd /home/ubuntu/incubator-devlake || exit 1
 
 # Configure environment
-cat <<EOT >> .env
+cat <<EOT > .env
 MYSQL_ROOT_PASSWORD=admin
 MYSQL_USER=merico
 MYSQL_PASSWORD=merico
@@ -31,15 +31,16 @@ MYSQL_DATABASE=lake
 DEVLAKE_PORT=8080
 EOT
 
-# Start containers
-docker-compose up -d --build
+# Start containers with rebuild
+docker-compose down
+docker-compose build --no-cache
+docker-compose up -d
 
-# ---- Fix: Advanced Readiness Check ----
-# Wait for DevLake API to respond (up to 3 mins)
+# Wait for services with proper check
 timeout=180
 elapsed=0
 while [ $elapsed -lt $timeout ]; do
-  if curl -s http://localhost:8080; then
+  if curl -s http://localhost:8080/api/health >/dev/null; then
     echo "DevLake is up!" >> /var/log/user-data.log
     break
   fi
@@ -48,6 +49,10 @@ while [ $elapsed -lt $timeout ]; do
   elapsed=$((elapsed+10))
 done
 
+# Get public IP safely
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "IP_FETCH_FAILED")
+
 # Final status
 docker-compose ps >> /var/log/user-data.log
-echo "Access DevLake at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):8080" >> /var/log/user-data.log
+echo "Access DevLake at: http://${PUBLIC_IP}:8080" >> /var/log/user-data.log
+EONG

@@ -11,6 +11,10 @@ sudo apt-get update -y
 sudo apt-get upgrade -y
 sudo apt-get install -y docker.io docker-compose git curl jq net-tools
 
+# Enable BuildKit and set platform
+echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
+sudo systemctl restart docker
+
 # Add user to docker group
 sudo usermod -aG docker ubuntu
 newgrp docker <<EONG
@@ -19,7 +23,7 @@ sudo systemctl start docker
 sudo systemctl enable docker
 
 # Clone DevLake with full path
-git clone https://github.com/apache/incubator-devlake.git /home/ubuntu/incubator-devlake
+git clone https://github.com/apache/incubator-devlake.git  /home/ubuntu/incubator-devlake
 cd /home/ubuntu/incubator-devlake || exit 1
 
 # Configure environment
@@ -31,9 +35,73 @@ MYSQL_DATABASE=lake
 DEVLAKE_PORT=8080
 EOT
 
-# Start containers with rebuild
-docker-compose down
-docker-compose build --no-cache
+# Create docker-compose.yml with platform specification
+cat << 'EOF' > docker-compose.yml
+version: '3.8'
+services:
+  mysql:
+    image: mysql:8
+    command: --performance-schema=off
+    volumes:
+      - mysql-storage:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: admin
+      MYSQL_DATABASE: lake
+      MYSQL_USER: merico
+      MYSQL_PASSWORD: merico
+    networks:
+      - devlake-network
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:8.1.2
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "3000:3000"
+    networks:
+      - devlake-network
+    mem_limit: 256m
+
+  devlake:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+        TARGETPLATFORM: linux/amd64  # Explicit platform specification
+    volumes:
+      - devlake-log:/app/logs
+    ports:
+      - "8080:8080"
+    environment:
+      MYSQL_ENDPOINT: mysql:3306
+      MYSQL_DATABASE: lake
+      MYSQL_USER: merico
+      MYSQL_PASSWORD: merico
+      MYSQL_ROOT_PASSWORD: admin
+    depends_on:
+      - mysql
+    networks:
+      - devlake-network
+    mem_limit: 1g
+    mem_reservation: 512m
+
+volumes:
+  mysql-storage:
+  grafana-storage:
+  devlake-log:
+
+networks:
+  devlake-network:
+    driver: bridge
+EOF
+
+# Build with BuildKit enabled and platform specified
+DOCKER_BUILDKIT=1 docker-compose build --no-cache --platform linux/amd64
 docker-compose up -d
 
 # Wait for services with proper check

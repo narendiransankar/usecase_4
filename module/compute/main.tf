@@ -10,6 +10,13 @@ resource "aws_instance" "web" {
 
   user_data = file("${path.module}/userdata.sh")
 
+
+  root_block_device {
+    volume_size = 20           # Size in GB
+    volume_type = "gp2"        # General Purpose SSD (you can also use gp3, io1, etc.)
+    delete_on_termination = true
+  }
+
   tags = {
     Name = "${var.env}-web-${count.index}"
   }

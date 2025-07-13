@@ -23,8 +23,4 @@ cp env.example .env
  docker-compose up -d
 # Wait for services to initialize
 sleep 30
-        EOF
-  tags = {
-    Name = "Public-Instance-DevLake"
-  }
-}
+        

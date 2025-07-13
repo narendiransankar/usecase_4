@@ -12,23 +12,29 @@ resource "aws_lb" "alb" {
 
 resource "aws_lb_target_group" "tg_homepage" {
   name        = "homepage-tg"
-  port        = 80
+  port        = 4000
   protocol    = "HTTP"
   target_type = "instance"
   vpc_id      = var.vpc_id
 
   health_check {
     path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
     unhealthy_threshold = 2
   }
 }
+
+
+
+
 resource "aws_lb_target_group_attachment" "tg_homepage_attachment" {
   target_group_arn = aws_lb_target_group.tg_homepage.arn
   target_id        = var.instance_a_id
-  port             = 80
+  port             = 4000
  
 }
 

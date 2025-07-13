@@ -1,21 +1,18 @@
-
-
 resource "aws_instance" "web" {
   count         = length(var.public_subnet_ids)
   ami           = "ami-020cba7c55df1f615"
   instance_type = var.instance_type
   subnet_id     = var.public_subnet_ids[count.index]
   associate_public_ip_address = true
-  vpc_security_group_ids = [var.web_sg_id]
+  vpc_security_group_ids      = [var.web_sg_id]
 
   user_data = file("${path.module}/userdata.sh")
 
-
-  root_block_device {
-    volume_size = 20           # Size in GB
-    volume_type = "gp2"        # General Purpose SSD (you can also use gp3, io1, etc.)
-    delete_on_termination = true
-  }
+  root_block_device {
+    volume_size           = 20
+    volume_type           = "gp2"
+    delete_on_termination = true
+  }
 
   tags = {
     Name = "${var.env}-web-${count.index}"

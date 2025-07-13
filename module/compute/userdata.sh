@@ -1,52 +1,53 @@
 #!/bin/bash
+# Fix: Add swap to prevent freezes (critical for t3.medium)
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
-# Update system packages and install prerequisites
-echo "Updating system packages and installing prerequisites..."
+# Update system and install prerequisites
 sudo apt-get update -y
 sudo apt-get upgrade -y
-sudo apt-get install -y docker.io docker-compose git curl
+sudo apt-get install -y docker.io docker-compose git curl jq
 
-# Add current user to docker group to avoid sudo for docker commands
-echo "Adding current user to docker group..."
-sudo usermod -aG docker ubuntu  # AWS Ubuntu default user is 'ubuntu'
+# Add user to docker group
+sudo usermod -aG docker ubuntu
 
-# Start and enable Docker service
-echo "Starting Docker service..."
+# Start and enable Docker
 sudo systemctl start docker
 sudo systemctl enable docker
 
-# Clone DevLake repository
-echo "Cloning DevLake repository..."
+# Clone DevLake
 git clone https://github.com/apache/incubator-devlake.git
 cd incubator-devlake
 
-# Set up environment variables
-echo "Setting up environment variables..."
+# Configure environment
 cat <<EOT >> .env
-# MySQL configuration
 MYSQL_ROOT_PASSWORD=admin
 MYSQL_USER=merico
 MYSQL_PASSWORD=merico
 MYSQL_DATABASE=lake
-MYSQL_PORT=3306
-
-# DevLake configuration
 DEVLAKE_PORT=8080
-DEVLAKE_ENV_MODE=development
 EOT
 
-# Build and start DevLake containers
-echo "Building and starting DevLake containers..."
-docker-compose up -d
+# Start containers
+docker-compose up -d --build
 
-# Wait for services to initialize
-echo "Waiting for services to initialize (60 seconds)..."
-sleep 60
+# ---- Fix: Advanced Readiness Check ----
+# Wait for DevLake API to respond (up to 3 mins)
+timeout=180
+elapsed=0
+while [ $elapsed -lt $timeout ]; do
+  if curl -s http://localhost:8080; then
+    echo "DevLake is up!" >> /var/log/user-data.log
+    break
+  fi
+  echo "Waiting for DevLake (${elapsed}s elapsed)..." >> /var/log/user-data.log
+  sleep 10
+  elapsed=$((elapsed+10))
+done
 
-# Check container status
-echo "Checking container status..."
-docker-compose ps
-
-# Display installation completion message
-echo "DevLake installation completed!"
-echo "Access the web interface at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):8080"
+# Final status
+docker-compose ps >> /var/log/user-data.log
+echo "Access DevLake at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):8080" >> /var/log/user-data.log

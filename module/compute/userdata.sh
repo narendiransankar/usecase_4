@@ -1,126 +1,128 @@
-#!/bin/bash
-# Fix: Add swap to prevent freezes
-sudo fallocate -l 2G /swapfile
+#!/bin/bash -ex
+
+# ------------------------------
+# 1. Expand Disk Space (Critical Fix)
+# ------------------------------
+# Check root filesystem usage
+ROOT_USAGE=$(df -h / | awk 'NR==2 {print $5}' | cut -d'%' -f1)
+if [ "$ROOT_USAGE" -gt 80 ]; then
+  echo "Expanding root volume..."
+  # For AWS EBS-backed instances:
+  sudo growpart /dev/xvda 1
+  sudo resize2fs /dev/xvda1
+fi
+
+# ------------------------------
+# 2. System Preparation
+# ------------------------------
+# Add swap space (persistent across reboots)
+sudo fallocate -l 4G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
-# Update system and install prerequisites
-sudo apt-get update -y
-sudo apt-get upgrade -y
-sudo apt-get install -y docker.io docker-compose git curl jq net-tools
+# Clean up unnecessary files
+sudo apt-get autoremove -y
+sudo apt-get clean
+sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Enable BuildKit and set platform
-echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
+# ------------------------------
+# 3. Docker Installation & Configuration
+# ------------------------------
+# Remove conflicting Docker installations
+sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+
+# Install Docker dependencies
+sudo apt-get update -y
+sudo apt-get install -y \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg-agent \
+    software-properties-common
+
+# Add Docker GPG key and repository
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg  | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Install Docker and Compose
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose
+
+# Configure Docker
+sudo mkdir -p /etc/docker
+echo '{
+  "experimental": true,
+  "features": {
+    "buildkit": true
+  },
+  "storage-driver": "overlay2",
+  "max-concurrent-downloads": 10
+}' | sudo tee /etc/docker/daemon.json
+
+# Start Docker service
+sudo systemctl enable docker
 sudo systemctl restart docker
 
 # Add user to docker group
 sudo usermod -aG docker ubuntu
-newgrp docker <<EONG
-# Start and enable Docker
-sudo systemctl start docker
-sudo systemctl enable docker
+sudo su - ubuntu -c "docker info"  # Validate installation
 
-# Clone DevLake with full path
-git clone https://github.com/apache/incubator-devlake.git  /home/ubuntu/incubator-devlake
-cd /home/ubuntu/incubator-devlake || exit 1
+# ------------------------------
+# 4. Build & Run DevLake
+# ------------------------------
+# Clone repository
+sudo su - ubuntu <<EOF
+cd ~
+git clone https://github.com/apache/incubator-devlake.git 
+cd incubator-devlake
 
-# Configure environment
-cat <<EOT > .env
-MYSQL_ROOT_PASSWORD=admin
-MYSQL_USER=merico
-MYSQL_PASSWORD=merico
-MYSQL_DATABASE=lake
-DEVLAKE_PORT=8080
-EOT
+# Create optimized Docker configuration
+cat << 'DOCKERFILE' > backend/Dockerfile.optimized
+FROM --platform=linux/amd64 debian:bookworm-slim AS base
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    libssh2-1-dev \\
+    libssl-dev \\
+    zlib1g-dev \\
+    gcc \\
+    binutils \\
+    cmake \\
+    golang \\
+    git \\
+    make \\
+    && rm -rf /var/lib/apt/lists/*
 
-# Create docker-compose.yml with platform specification
-cat << 'EOF' > docker-compose.yml
-version: '3.8'
-services:
-  mysql:
-    image: mysql:8
-    command: --performance-schema=off
-    volumes:
-      - mysql-storage:/var/lib/mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: admin
-      MYSQL_DATABASE: lake
-      MYSQL_USER: merico
-      MYSQL_PASSWORD: merico
-    networks:
-      - devlake-network
-    mem_limit: 512m
+# ... [keep rest of your Dockerfile content] ...
+DOCKERFILE
 
-  grafana:
-    image: grafana/grafana:8.1.2
-    volumes:
-      - grafana-storage:/var/lib/grafana
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    ports:
-      - "3000:3000"
-    networks:
-      - devlake-network
-    mem_limit: 256m
+# Use optimized build command
+DOCKER_BUILDKIT=1 docker-compose build \\
+    --platform linux/amd64 \\
+    --parallel \\
+    --compress \\
+    --force-rm \\
+    --no-cache
 
-  devlake:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-      args:
-        BUILDKIT_INLINE_CACHE: 1
-        TARGETPLATFORM: linux/amd64  # Explicit platform specification
-    volumes:
-      - devlake-log:/app/logs
-    ports:
-      - "8080:8080"
-    environment:
-      MYSQL_ENDPOINT: mysql:3306
-      MYSQL_DATABASE: lake
-      MYSQL_USER: merico
-      MYSQL_PASSWORD: merico
-      MYSQL_ROOT_PASSWORD: admin
-    depends_on:
-      - mysql
-    networks:
-      - devlake-network
-    mem_limit: 1g
-    mem_reservation: 512m
-
-volumes:
-  mysql-storage:
-  grafana-storage:
-  devlake-log:
-
-networks:
-  devlake-network:
-    driver: bridge
-EOF
-
-# Build with BuildKit enabled and platform specified
-DOCKER_BUILDKIT=1 docker-compose build --no-cache --platform linux/amd64
 docker-compose up -d
 
-# Wait for services with proper check
-timeout=180
-elapsed=0
-while [ $elapsed -lt $timeout ]; do
-  if curl -s http://localhost:8080/api/health >/dev/null; then
-    echo "DevLake is up!" >> /var/log/user-data.log
-    break
+# Health check
+timeout=300
+while [ \$timeout -gt 0 ]; do
+  if curl -s http://localhost:8080/api/health; then
+    echo "DevLake is ready!" && break
   fi
-  echo "Waiting for DevLake (${elapsed}s elapsed)..." >> /var/log/user-data.log
   sleep 10
-  elapsed=$((elapsed+10))
+  timeout=\$((timeout-10))
 done
+EOF
 
-# Get public IP safely
-PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "IP_FETCH_FAILED")
+# ------------------------------
+# 5. Final Validation
+# ------------------------------
+# Get public IP
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
 
-# Final status
-docker-compose ps >> /var/log/user-data.log
-echo "Access DevLake at: http://${PUBLIC_IP}:8080" >> /var/log/user-data.log
-EONG
+# Output access information
+echo "DevLake available at: http://${PUBLIC_IP}:8080"
+echo "Grafana available at: http://${PUBLIC_IP}:3000 (admin/admin)"
